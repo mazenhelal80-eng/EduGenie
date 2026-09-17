@@ -136,7 +136,7 @@ export function SettingsPage() {
           <h2 className="text-lg font-bold tracking-tight text-foreground">Maz-tech</h2>
         </div>
         <p className="mb-4 text-xs font-light tracking-wider text-muted-foreground relative">
-          ENG:Mazen , ENG:Anwaar
+          ENG:Mazen Helal
         </p>
         <p className="mb-5 text-sm leading-relaxed text-foreground/80 relative">
           نحن هنا دائماً لمساعدتك! للاستفسارات، طلب الدعم الفني، أو تجديد الاشتراك، لا تتردد في التواصل معنا.

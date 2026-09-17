@@ -13,6 +13,7 @@ import { useTranslation } from "@/providers/i18n-provider";
 export function SignupForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const { t } = useTranslation();
 
@@ -48,14 +49,23 @@ export function SignupForm() {
   const onSubmit = async (data: SignupValues) => {
     setIsLoading(true);
     setError(null);
+    setSuccessMessage(null);
 
-    const { error: signUpError } = await supabase.auth.signUp({
-      email: data.email,
+    const cleanEmail = data.email.trim().toLowerCase();
+    const { data: authData, error: signUpError } = await supabase.auth.signUp({
+      email: cleanEmail,
       password: data.password,
     });
 
     if (signUpError) {
       setError(signUpError.message);
+      setIsLoading(false);
+      return;
+    }
+
+    // If email confirmation is required and no active session was returned
+    if (authData?.user && !authData?.session) {
+      setSuccessMessage(t.auth.signup.checkEmailSuccess);
       setIsLoading(false);
       return;
     }
@@ -72,41 +82,60 @@ export function SignupForm() {
         <p className="text-sm text-muted-foreground">{t.auth.signup.subtitle}</p>
       </div>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <div className="space-y-2">
-          <Field
-            label={t.auth.signup.email}
-            type="email"
-            placeholder={t.auth.signup.emailPlaceholder}
-            {...register("email")}
-          />
-          {errors.email && <p className="text-sm text-red-500">{errors.email.message}</p>}
+      {successMessage ? (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-center text-sm font-medium text-green-800 leading-relaxed dark:border-green-900/50 dark:bg-green-950/40 dark:text-green-300">
+            {successMessage}
+          </div>
+          <Button
+            type="button"
+            className="w-full"
+            onClick={() => router.push("/login")}
+          >
+            {t.auth.signup.login}
+          </Button>
         </div>
+      ) : (
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Field
+              label={t.auth.signup.email}
+              type="email"
+              placeholder={t.auth.signup.emailPlaceholder}
+              {...register("email")}
+            />
+            {errors.email && <p className="text-sm text-red-500">{errors.email.message}</p>}
+          </div>
 
-        <div className="space-y-2">
-          <Field
-            label={t.auth.signup.password}
-            type="password"
-            {...register("password")}
-          />
-          {errors.password && <p className="text-sm text-red-500">{errors.password.message}</p>}
-        </div>
+          <div className="space-y-2">
+            <Field
+              label={t.auth.signup.password}
+              type="password"
+              {...register("password")}
+            />
+            {errors.password && <p className="text-sm text-red-500">{errors.password.message}</p>}
+          </div>
 
-        <div className="space-y-2">
-          <Field
-            label={t.auth.signup.confirmPassword}
-            type="password"
-            {...register("confirmPassword")}
-          />
-          {errors.confirmPassword && <p className="text-sm text-red-500">{errors.confirmPassword.message}</p>}
-        </div>
+          <div className="space-y-2">
+            <Field
+              label={t.auth.signup.confirmPassword}
+              type="password"
+              {...register("confirmPassword")}
+            />
+            {errors.confirmPassword && <p className="text-sm text-red-500">{errors.confirmPassword.message}</p>}
+          </div>
 
-        {error && <div className="text-sm text-red-500 text-center">{error}</div>}
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm font-medium text-red-700 leading-relaxed dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+              {error}
+            </div>
+          )}
 
-        <Button type="submit" className="w-full" disabled={isLoading}>
-          {isLoading ? t.auth.signup.submitting : t.auth.signup.submit}
-        </Button>
-      </form>
+          <Button type="submit" className="w-full" disabled={isLoading}>
+            {isLoading ? t.auth.signup.submitting : t.auth.signup.submit}
+          </Button>
+        </form>
+      )}
     </div>
   );
 }

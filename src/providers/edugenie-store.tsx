@@ -220,6 +220,16 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
   const lastFetchAt = useRef(0);
   const activeLoad = useRef<Promise<void> | null>(null);
 
+  const getTenantId = useCallback(async (): Promise<string> => {
+    if (tenantId) return tenantId;
+    const userTenant = await fetchUserTenant(supabase);
+    if (userTenant?.tenantId) {
+      setTenantId(userTenant.tenantId);
+      return userTenant.tenantId;
+    }
+    throw new Error("لم يتم العثور على المركز التعليمي (Tenant ID). يرجى تسجيل الدخول مرة أخرى.");
+  }, [tenantId, supabase]);
+
   const loadData = useCallback(
     async ({ force = false }: { force?: boolean } = {}) => {
       if (activeLoad.current && !force) {
@@ -231,7 +241,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           // 1. Get the current user's tenant ID
           const activeTenantId = await fetchUserTenant(supabase);
 
-          if (!activeTenantId) {
+          if (!activeTenantId || !activeTenantId.tenantId) {
             // No logged-in user — reset state and stop loading
             dispatch({ type: "reset" });
             dispatch({ type: "setLoading", payload: false });
@@ -246,20 +256,6 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
             return activeTenantId.tenantId;
           });
 
-          // Super admin without a tenant - just mark as loaded with isSuperAdmin flag
-          if (activeTenantId.isSuperAdmin && !activeTenantId.tenantId) {
-            dispatch({
-              type: "hydrate",
-              payload: {
-                ...initialState,
-                isSuperAdmin: true,
-                subscription: { endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), isActive: true },
-              },
-            });
-            return;
-          }
-
-
           // 2. Try to load from cache for instant UI (optional)
           const cached = readTenantCache(activeTenantId.tenantId);
           if (cached) {
@@ -270,7 +266,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           }
 
           // 3. Always fetch fresh data from Supabase (don't rely on cache)
-          const data = await fetchTenantData(supabase, activeTenantId.tenantId!);
+          const data = await fetchTenantData(supabase, activeTenantId.tenantId);
 
           const now = new Date();
           const endDate = new Date(data.subscription.endDate);
@@ -293,7 +289,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: "hydrate", payload: finalData });
           lastFetchAt.current = Date.now();
           // Update cache with fresh data
-          writeTenantCache(activeTenantId.tenantId!, finalData);
+          writeTenantCache(activeTenantId.tenantId, finalData);
         } catch (error) {
           console.error("Error loading data:", error);
           dispatch({ type: "setLoading", payload: false });
@@ -396,17 +392,14 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
 
   const refreshData = useCallback(async () => {
     const activeTenantId = tenantId ? { tenantId, isSuperAdmin: state.isSuperAdmin } : (await fetchUserTenant(supabase));
-    if (!activeTenantId) return;
-
-    // Super admin with no tenant — nothing to refresh
-    if (activeTenantId.isSuperAdmin && !activeTenantId.tenantId) return;
+    if (!activeTenantId || !activeTenantId.tenantId) return;
 
     const recentlyFetched = Date.now() - lastFetchAt.current < 15_000;
     if (recentlyFetched && state.students.length > 0) return;
 
     dispatch({ type: "setLoading", payload: true });
     try {
-      const data = await fetchTenantData(supabase, activeTenantId.tenantId!);
+      const data = await fetchTenantData(supabase, activeTenantId.tenantId);
       setTenantId(activeTenantId.tenantId);
 
       const now = new Date();
@@ -429,7 +422,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
 
       dispatch({ type: "hydrate", payload: finalData });
       lastFetchAt.current = Date.now();
-      writeTenantCache(activeTenantId.tenantId!, finalData);
+      writeTenantCache(activeTenantId.tenantId, finalData);
     } catch (error) {
       console.error("Error refreshing data:", error);
       dispatch({ type: "setLoading", payload: false });
@@ -438,14 +431,12 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
 
   const addTeacher = useCallback(
     async (teacher: Omit<Teacher, "id" | "tenantId" | "createdAt" | "updatedAt" | "isActive">) => {
-      if (!tenantId) {
-        throw new Error("No tenant ID found");
-      }
+      const currentTenantId = await getTenantId();
 
       const newTeacher: Teacher = {
         ...teacher,
         id: crypto.randomUUID(),
-        tenantId: tenantId,
+        tenantId: currentTenantId,
         isActive: true,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -455,7 +446,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         // Save to Supabase first
         const { error } = await supabase.from("teachers").insert({
           id: newTeacher.id,
-          tenant_id: tenantId,
+          tenant_id: currentTenantId,
           full_name: teacher.fullName,
           phone: teacher.phone,
           subject: teacher.subject,
@@ -475,13 +466,13 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         throw error;
       }
     },
-    [tenantId, supabase]
+    [getTenantId, supabase]
   );
 
   const value = useMemo<EduGenieContextValue>(() => {
-    const makeEntity = <T extends object>(data: T) => ({
+    const makeEntity = <T extends object>(data: T, entityTenantId?: string) => ({
       id: crypto.randomUUID(),
-      tenantId: tenantId || "guest",
+      tenantId: entityTenantId || tenantId || "d0000000-0000-0000-0000-000000000001",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       ...data,
@@ -492,30 +483,30 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
       tenantId,
       metrics,
       updateSettings: async (payload) => {
-        if (!tenantId || !payload.billingModel) {
-          return; // No-op if no tenant or payload
+        const currentTenantId = await getTenantId();
+        if (!payload.billingModel) {
+          return; // No-op if no payload
         }
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("tenant_settings").upsert({
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             billing_model: payload.billingModel,
           });
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to update settings");
 
           // Only update state after successful save
           dispatch({ type: "updateSettings", payload });
-        } catch (error) {
-          console.error("Error updating settings:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error updating settings:", msg);
+          throw new Error(msg);
         }
       },
       addStudent: async (payload) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const { cardId, ...studentData } = payload;
 
@@ -526,7 +517,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           const { data: existingDbCard } = await supabase
             .from("cards")
             .select("student_id, status")
-            .eq("tenant_id", tenantId)
+            .eq("tenant_id", currentTenantId)
             .eq("card_id", trimmedCardId)
             .maybeSingle();
 
@@ -539,15 +530,15 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           ...studentData,
           status: "active",
           joinDate: new Date().toISOString().slice(0, 10),
-        });
+        }, currentTenantId);
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("students").insert({
             id: student.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             full_name: student.fullName,
-            phone: student.phone,
+            phone: student.phone || null,
             parent_phone: student.parentPhone || null,
             notes: student.notes || null,
             group_id: student.groupId || null,
@@ -555,7 +546,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
             status: student.status,
           });
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to add student");
 
           // Only update state after successful save
           dispatch({ type: "addStudent", payload: student });
@@ -565,7 +556,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
             const trimmedCardId = cardId.trim();
             const cardRecord: StudentCard = {
               id: crypto.randomUUID(),
-              tenantId,
+              tenantId: currentTenantId,
               cardId: trimmedCardId,
               studentId: student.id,
               status: "active",
@@ -580,40 +571,46 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
 
             dispatch({ type: "assignCard", payload: cardRecord });
 
-            await supabase.from("cards").upsert({
+            const { error: cardError } = await supabase.from("cards").upsert({
               id: cardRecord.id,
-              tenant_id: tenantId,
+              tenant_id: currentTenantId,
               card_id: trimmedCardId,
               student_id: student.id,
               status: "active",
             }, { onConflict: "tenant_id,card_id" });
+
+            if (cardError) throw new Error(cardError.message || "Failed to assign card");
           }
 
           return student;
-        } catch (error) {
-          console.error("Error adding student:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error adding student:", msg);
+          throw new Error(msg);
         }
       },
       archiveStudent: async (studentId) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         try {
           // Update in Supabase first
-          const { error } = await supabase.from("students").update({ status: "archived" }).eq("id", studentId);
-          if (error) throw error;
+          const { error } = await supabase
+            .from("students")
+            .update({ status: "archived" })
+            .eq("id", studentId)
+            .eq("tenant_id", currentTenantId);
+          if (error) throw new Error(error.message || "Failed to archive student");
 
           // Only update state after successful save
           dispatch({ type: "updateStudentStatus", payload: { id: studentId, status: "archived" } });
-        } catch (error) {
-          console.error("Error archiving student:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error archiving student:", msg);
+          throw new Error(msg);
         }
       },
       editStudent: async (studentId, data) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
         const existing = state.students.find(s => s.id === studentId);
         if (!existing) throw new Error("Student not found");
 
@@ -626,57 +623,57 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         try {
           const { error } = await supabase.from("students").update({
             full_name: updated.fullName,
-            phone: updated.phone,
-            parent_phone: updated.parentPhone,
-            notes: updated.notes,
-            group_id: updated.groupId,
-            teacher_id: updated.teacherId,
+            phone: updated.phone || null,
+            parent_phone: updated.parentPhone || null,
+            notes: updated.notes || null,
+            group_id: updated.groupId || null,
+            teacher_id: updated.teacherId || null,
             updated_at: updated.updatedAt,
-          }).eq("id", studentId);
+          }).eq("id", studentId).eq("tenant_id", currentTenantId);
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to update student");
           dispatch({ type: "updateStudent", payload: updated });
-        } catch (error) {
-          console.error("Error updating student:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error updating student:", msg);
+          throw new Error(msg);
         }
       },
       addGroup: async (payload) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const group: Group = makeEntity({
           ...payload,
           enrolled: 0,
           isActive: true,
-        });
+        }, currentTenantId);
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("groups").insert({
             id: group.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             name: group.name,
             subject: group.subject,
-            teacher_id: group.teacherId,
+            teacher_id: group.teacherId || null,
             schedule: group.schedule,
             capacity: group.capacity,
             monthly_sessions: group.monthlySessions,
             monthly_price: group.monthlyPrice,
           });
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to add group");
 
           // Only update state after successful save
           dispatch({ type: "addGroup", payload: group });
-        } catch (error) {
-          console.error("Error adding group:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error adding group:", msg);
+          throw new Error(msg);
         }
       },
       editGroup: async (groupId, data) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
         const existing = state.groups.find(g => g.id === groupId);
         if (!existing) throw new Error("Group not found");
 
@@ -690,38 +687,40 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           const { error } = await supabase.from("groups").update({
             name: updated.name,
             subject: updated.subject,
-            teacher_id: updated.teacherId,
+            teacher_id: updated.teacherId || null,
             schedule: updated.schedule,
             capacity: updated.capacity,
             monthly_sessions: updated.monthlySessions,
             monthly_price: updated.monthlyPrice,
             updated_at: updated.updatedAt,
-          }).eq("id", groupId);
+          }).eq("id", groupId).eq("tenant_id", currentTenantId);
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to update group");
           dispatch({ type: "updateGroup", payload: updated });
-        } catch (error) {
-          console.error("Error updating group:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error updating group:", msg);
+          throw new Error(msg);
         }
       },
       archiveGroup: async (groupId) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
         try {
           const { error } = await supabase.from("groups").update({
             is_active: false,
             updated_at: new Date().toISOString(),
-          }).eq("id", groupId);
+          }).eq("id", groupId).eq("tenant_id", currentTenantId);
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to archive group");
           dispatch({ type: "updateGroupStatus", payload: { id: groupId, isActive: false } });
-        } catch (error) {
-          console.error("Error archiving group:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error archiving group:", msg);
+          throw new Error(msg);
         }
       },
       assignCard: async (cardId, studentId) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
 
         const trimmedCardId = cardId.trim();
         
@@ -729,7 +728,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         const { data: existingDbCard } = await supabase
           .from("cards")
           .select("student_id, status")
-          .eq("tenant_id", tenantId)
+          .eq("tenant_id", currentTenantId)
           .eq("card_id", trimmedCardId)
           .maybeSingle();
 
@@ -740,7 +739,7 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         // Optimistically create the card payload
         const cardRecord: StudentCard = {
           id: crypto.randomUUID(), // Temporarily random until DB returns
-          tenantId,
+          tenantId: currentTenantId,
           cardId: trimmedCardId,
           studentId,
           status: "active",
@@ -757,20 +756,15 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: "assignCard", payload: cardRecord });
 
         try {
-          // If the student already has a card, we should deactivate it in DB
-          // Wait, this is best handled via upsert or a separate RPC. We will upsert the new one.
-          // In a real scenario, we might want to disable previous cards first.
-          // For now, we update the card_id to point to the student.
-
           const { data, error } = await supabase.from("cards").upsert({
             id: cardRecord.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             card_id: cardId,
             student_id: studentId,
             status: "active",
           }, { onConflict: "tenant_id,card_id" }).select().single();
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to assign card");
 
           // Update state with actual DB ID
           dispatch({
@@ -781,17 +775,15 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
               updatedAt: data.updated_at,
             }
           });
-        } catch (error) {
-          console.error("Error assigning card:", error);
-          // Rollback: Reload data or dispatch reverse action
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error assigning card:", msg);
+          throw new Error(msg);
         }
       },
 
       markAttendance: async (studentId, status) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const student = state.students.find((s) => s.id === studentId);
         const record: AttendanceRecord = makeEntity({
@@ -799,13 +791,13 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           groupId: student?.groupId,
           status,
           attendedOn: new Date().toISOString().slice(0, 10),
-        });
+        }, currentTenantId);
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("attendance").upsert({
             id: record.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             student_id: record.studentId,
             group_id: record.groupId,
             status: record.status,
@@ -817,15 +809,13 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           // Only update state after successful save
           dispatch({ type: "addAttendanceRecords", payload: [record] });
         } catch (error: unknown) {
-          const msg = error instanceof Error ? error.message : String(error);
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
           console.error("Error marking attendance:", msg);
-          throw error;
+          throw new Error(msg);
         }
       },
       markGroupAttendance: async (records) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const attendedOn = new Date().toISOString().slice(0, 10);
         const newRecords = records.map((r) => {
@@ -835,14 +825,14 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
             groupId: student?.groupId,
             status: r.status,
             attendedOn,
-          }) as AttendanceRecord;
+          }, currentTenantId) as AttendanceRecord;
         });
 
         try {
           // Save to Supabase first
           const dbRecords = newRecords.map(r => ({
             id: r.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             student_id: r.studentId,
             group_id: r.groupId,
             status: r.status,
@@ -857,26 +847,24 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
           // Only update state after successful save
           dispatch({ type: "addAttendanceRecords", payload: newRecords });
         } catch (error: unknown) {
-          const msg = error instanceof Error ? error.message : String(error);
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
           console.error("Error marking group attendance:", msg);
-          throw error;
+          throw new Error(msg);
         }
       },
       addPayment: async (payload) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const payment: Payment = makeEntity({
           ...payload,
           paidAt: new Date().toISOString().slice(0, 10),
-        });
+        }, currentTenantId);
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("payments").insert({
             id: payment.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             student_id: payment.studentId,
             amount: payment.amount,
             remaining_balance: payment.remainingBalance,
@@ -884,48 +872,48 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
             for_month: payment.forMonth,
           });
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to add payment");
 
           // Only update state after successful save
           dispatch({ type: "addPayment", payload: payment });
-        } catch (error) {
-          console.error("Error adding payment:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error adding payment:", msg);
+          throw new Error(msg);
         }
       },
       addExpense: async (payload) => {
-        if (!tenantId) {
-          throw new Error("No tenant ID found");
-        }
+        const currentTenantId = await getTenantId();
 
         const expense: Expense = makeEntity({
           ...payload,
           spentAt: new Date().toISOString().slice(0, 10),
-        });
+        }, currentTenantId);
 
         try {
           // Save to Supabase first
           const { error } = await supabase.from("expenses").insert({
             id: expense.id,
-            tenant_id: tenantId,
+            tenant_id: currentTenantId,
             category: expense.category,
             amount: expense.amount,
             spent_at: expense.spentAt,
             notes: expense.notes,
           });
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to add expense");
 
           // Only update state after successful save
           dispatch({ type: "addExpense", payload: expense });
-        } catch (error) {
-          console.error("Error adding expense:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error adding expense:", msg);
+          throw new Error(msg);
         }
       },
       addTeacher,
       editTeacher: async (teacherId, data) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
         const existing = state.teachers.find(t => t.id === teacherId);
         if (!existing) throw new Error("Teacher not found");
 
@@ -938,35 +926,37 @@ export function EduGenieProvider({ children }: { children: React.ReactNode }) {
         try {
           const { error } = await supabase.from("teachers").update({
             full_name: updated.fullName,
-            phone: updated.phone,
+            phone: updated.phone || null,
             subject: updated.subject,
             payment_type: updated.paymentType,
             rate: updated.rate,
             is_active: updated.isActive,
             updated_at: updated.updatedAt,
-          }).eq("id", teacherId);
+          }).eq("id", teacherId).eq("tenant_id", currentTenantId);
 
-          if (error) throw error;
+          if (error) throw new Error(error.message || "Failed to update teacher");
           dispatch({ type: "updateTeacher", payload: updated });
-        } catch (error) {
-          console.error("Error updating teacher:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error updating teacher:", msg);
+          throw new Error(msg);
         }
       },
       archiveTeacher: async (teacherId) => {
-        if (!tenantId) throw new Error("No tenant ID found");
+        const currentTenantId = await getTenantId();
         try {
-          const { error } = await supabase.from("teachers").update({ is_active: false }).eq("id", teacherId);
-          if (error) throw error;
+          const { error } = await supabase.from("teachers").update({ is_active: false }).eq("id", teacherId).eq("tenant_id", currentTenantId);
+          if (error) throw new Error(error.message || "Failed to archive teacher");
           dispatch({ type: "updateTeacherStatus", payload: { id: teacherId, isActive: false } });
-        } catch (error) {
-          console.error("Error archiving teacher:", error);
-          throw error;
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : (error as { message?: string })?.message || String(error);
+          console.error("Error archiving teacher:", msg);
+          throw new Error(msg);
         }
       },
       refreshData,
     };
-  }, [state, metrics, tenantId, supabase, addTeacher, refreshData]);
+  }, [state, metrics, tenantId, supabase, getTenantId, addTeacher, refreshData]);
 
   return <EduGenieContext.Provider value={value}>{children}</EduGenieContext.Provider>;
 }

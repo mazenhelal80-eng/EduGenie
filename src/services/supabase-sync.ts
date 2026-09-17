@@ -1,13 +1,26 @@
+"use client";
+
 import { createBrowserClient } from "@supabase/ssr";
 import type { AttendanceRecord, Expense, Group, Payment, Student, Teacher } from "@/types/domain";
 
 type DbRow = Record<string, unknown>;
 
+let clientInstance: ReturnType<typeof createBrowserClient> | null = null;
+
 export function createSupabaseClient() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  if (typeof window === "undefined") {
+    return createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+  }
+  if (!clientInstance) {
+    clientInstance = createBrowserClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    );
+  }
+  return clientInstance;
 }
 
 export async function fetchUserTenant(supabase: ReturnType<typeof createSupabaseClient>) {
@@ -44,12 +57,52 @@ export async function fetchUserTenant(supabase: ReturnType<typeof createSupabase
 
   const isSuperAdmin = isSuperAdminFromDb || isSuperAdminByEmail;
 
-  // Super admin may not have a tenant - that's OK
-  if (isSuperAdmin && !tenantId) {
-    return { tenantId: null as string | null, isSuperAdmin: true };
-  }
+  // If no tenantId is linked to this user, fetch the primary tenant or default center
+  if (!tenantId) {
+    try {
+      const { data: defaultTenant } = await supabase
+        .from("tenants")
+        .select("id")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
 
-  if (!tenantId) return null;
+      if (defaultTenant?.id) {
+        tenantId = defaultTenant.id;
+      } else {
+        tenantId = "d0000000-0000-0000-0000-000000000001";
+      }
+
+      // Upsert into public.users to keep the user permanently attached
+      await supabase.from("users").upsert({
+        id: user.id,
+        tenant_id: tenantId,
+        role: "owner",
+        full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "User",
+        is_active: true,
+        is_superadmin: isSuperAdmin,
+      }, { onConflict: "id" });
+    } catch (e) {
+      console.warn("Could not auto-link tenant:", e);
+      if (!tenantId) {
+        tenantId = "d0000000-0000-0000-0000-000000000001";
+      }
+    }
+  } else {
+    // If tenantId exists, ensure public.users row is active
+    try {
+      await supabase.from("users").upsert({
+        id: user.id,
+        tenant_id: tenantId,
+        role: "owner",
+        full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "User",
+        is_active: true,
+        is_superadmin: isSuperAdmin,
+      }, { onConflict: "id" });
+    } catch {
+      // Ignore if background upsert fails
+    }
+  }
 
   return { tenantId, isSuperAdmin };
 }

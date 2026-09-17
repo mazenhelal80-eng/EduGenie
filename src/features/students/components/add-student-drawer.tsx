@@ -39,9 +39,10 @@ export function AddStudentDrawer({ open, onOpenChange, onSuccess }: AddStudentDr
       toast.success("تم إضافة الطالب بنجاح");
       onSuccess?.();
       onOpenChange(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add student.");
-      toast.error("حدث خطأ أثناء إضافة الطالب");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : (err as { message?: string })?.message || String(err) || "Failed to add student.";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setIsSubmitting(false);
     }

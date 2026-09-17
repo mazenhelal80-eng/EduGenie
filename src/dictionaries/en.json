@@ -24,7 +24,15 @@
       "login": "Sign In",
       "passwordMismatch": "Passwords do not match",
       "passwordMinLength": "Password must be at least 6 characters",
-      "invalidEmail": "Invalid email address"
+      "invalidEmail": "Invalid email address",
+      "checkEmailSuccess": "Account created successfully! A confirmation link has been sent to your email. Please verify it to sign in."
+    },
+    "errors": {
+      "invalidCredentials": "Invalid email or password, or your account email has not been confirmed yet.",
+      "emailNotConfirmed": "Please confirm your email address via the link sent to your inbox before logging in.",
+      "tooManyRequests": "Too many requests. Please wait a moment and try again.",
+      "userNotFound": "Account not found. Please verify your email or sign up.",
+      "genericError": "An error occurred during login. Please try again."
     },
     "onboarding": {
       "title": "Organization Setup",

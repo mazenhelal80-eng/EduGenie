@@ -44,19 +44,31 @@ export function LoginForm() {
     setIsLoading(true);
     setError(null);
 
+    const cleanEmail = data.email.trim().toLowerCase();
     const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: data.email,
+      email: cleanEmail,
       password: data.password,
     });
 
     if (signInError) {
-      setError(signInError.message);
+      const msg = (signInError.message || "").toLowerCase();
+      if (msg.includes("invalid login credentials")) {
+        setError(t.auth.errors.invalidCredentials);
+      } else if (msg.includes("email not confirmed")) {
+        setError(t.auth.errors.emailNotConfirmed);
+      } else if (msg.includes("too many requests") || msg.includes("rate limit")) {
+        setError(t.auth.errors.tooManyRequests);
+      } else if (msg.includes("user not found")) {
+        setError(t.auth.errors.userNotFound);
+      } else {
+        setError(signInError.message || t.auth.errors.genericError);
+      }
       setIsLoading(false);
       return;
     }
 
     // Super admin check by email - always redirect to super admin dashboard
-    if (data.email.toLowerCase() === "mazenhelal29@gmail.com") {
+    if (cleanEmail === "mazenhelal29@gmail.com") {
       router.push("/super-admin");
       router.refresh();
       return;
@@ -71,7 +83,7 @@ export function LoginForm() {
         .maybeSingle();
       userData = res.data;
     } catch {
-      setError("حدث خطأ في النظام");
+      setError(t.auth.errors.genericError);
     }
 
     if (!userData?.tenant_id) {
@@ -110,7 +122,11 @@ export function LoginForm() {
           {errors.password && <p className="text-sm text-red-500">{errors.password.message}</p>}
         </div>
 
-        {error && <div className="text-sm text-red-500 text-center">{error}</div>}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm font-medium text-red-700 leading-relaxed dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+            {error}
+          </div>
+        )}
 
         <Button type="submit" className="w-full" disabled={isLoading}>
           {isLoading ? t.auth.login.submitting : t.auth.login.submit}
