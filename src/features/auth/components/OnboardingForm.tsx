@@ -48,11 +48,19 @@ export function OnboardingForm() {
     setIsLoading(true);
     setError(null);
 
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (!currentUser) {
+      setError("يجب تسجيل الدخول أولاً");
+      setIsLoading(false);
+      return;
+    }
+
     // Check if user already has a tenant
     const { data: existingUser } = await supabase
       .from("users")
       .select("id, tenant_id")
-      .single();
+      .eq("id", currentUser.id)
+      .maybeSingle();
 
     if (existingUser?.tenant_id) {
       // User already has a tenant, redirect to dashboard
@@ -61,15 +69,81 @@ export function OnboardingForm() {
       return;
     }
 
-    const { error: rpcError } = await supabase.rpc("create_tenant_with_owner", {
+    const baseSlug = data.tenantSlug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+
+    // Try RPC first
+    const { data: rpcTenantId, error: rpcError } = await supabase.rpc("create_tenant_with_owner", {
       tenant_name: data.tenantName,
-      tenant_slug: data.tenantSlug,
+      tenant_slug: baseSlug,
       owner_full_name: data.ownerFullName,
       owner_phone: data.ownerPhone || null,
     });
 
-    if (rpcError) {
-      setError(rpcError.message);
+    if (!rpcError && rpcTenantId) {
+      router.push("/");
+      router.refresh();
+      return;
+    }
+
+    // Fallback: Direct table operations with slug uniqueness retry
+    let finalSlug = baseSlug;
+    let insertResult: { id: string } | null = null;
+    let attempts = 0;
+
+    while (attempts < 5) {
+      const { data: newTenant, error: tenantErr } = await supabase
+        .from("tenants")
+        .insert({
+          name: data.tenantName,
+          slug: finalSlug,
+          phone: data.ownerPhone || null,
+        })
+        .select("id")
+        .single();
+
+      if (!tenantErr && newTenant) {
+        insertResult = newTenant;
+        break;
+      }
+
+      if (tenantErr?.message?.includes("tenants_slug_key") || tenantErr?.code === "23505") {
+        attempts += 1;
+        finalSlug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
+      } else {
+        setError(tenantErr?.message || rpcError?.message || "حدث خطأ أثناء إنشاء المركز");
+        setIsLoading(false);
+        return;
+      }
+    }
+
+    if (!insertResult) {
+      setError("اسم المعرّف (Slug) مستخدم بالفعل، يرجى كتابة معرّف آخر");
+      setIsLoading(false);
+      return;
+    }
+
+    await supabase
+      .from("tenant_settings")
+      .insert({
+        tenant_id: insertResult.id,
+        billing_model: "prepaid",
+      });
+
+    const isSuper = currentUser.email === "mazenhelal29@gmail.com";
+    const { error: userErr } = await supabase
+      .from("users")
+      .upsert({
+        id: currentUser.id,
+        tenant_id: insertResult.id,
+        full_name: data.ownerFullName,
+        phone: data.ownerPhone || null,
+        role: "owner",
+        is_active: true,
+        is_superadmin: isSuper,
+      });
+
+    if (userErr) {
+      setError(userErr.message);
       setIsLoading(false);
       return;
     }

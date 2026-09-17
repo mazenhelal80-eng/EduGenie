@@ -16,13 +16,21 @@ AS $$
 DECLARE
   new_tenant_id uuid;
   owner_role_id uuid;
+  final_slug text := lower(trim(tenant_slug));
+  counter int := 1;
 BEGIN
   IF auth.uid() IS NULL THEN
     RAISE EXCEPTION 'Authentication is required';
   END IF;
 
+  -- Ensure slug uniqueness automatically
+  WHILE EXISTS (SELECT 1 FROM public.tenants WHERE slug = final_slug) LOOP
+    final_slug := lower(trim(tenant_slug)) || '-' || counter;
+    counter := counter + 1;
+  END LOOP;
+
   INSERT INTO public.tenants (name, slug, phone, address, subscription_end_date)
-  VALUES (tenant_name, tenant_slug, owner_phone, NULL, now() + interval '365 days')
+  VALUES (tenant_name, final_slug, owner_phone, NULL, now() + interval '365 days')
   RETURNING id INTO new_tenant_id;
 
   INSERT INTO public.roles (tenant_id, name, permissions)

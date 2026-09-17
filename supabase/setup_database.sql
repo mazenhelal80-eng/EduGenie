@@ -361,6 +361,9 @@ WITH CHECK (tenant_id = public.current_tenant_id() OR public.is_super_admin() OR
 -- Allow anonymous read on tenants for login slug check
 CREATE POLICY "anon can read tenants" ON public.tenants FOR SELECT TO anon USING (true);
 
+CREATE POLICY "tenants insert policy" ON public.tenants FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY "tenant_settings insert policy" ON public.tenant_settings FOR INSERT TO authenticated WITH CHECK (true);
+
 -- 9. Automatic User Auto-Linking Trigger
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger
@@ -414,21 +417,38 @@ AS $$
 DECLARE
   new_tenant_id uuid;
   current_user_id uuid;
+  final_slug text := lower(trim(tenant_slug));
+  counter int := 1;
 BEGIN
   current_user_id := auth.uid();
   IF current_user_id IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
 
-  INSERT INTO public.tenants (name, slug, phone)
-  VALUES (tenant_name, tenant_slug, owner_phone)
+  -- Ensure slug uniqueness automatically
+  WHILE EXISTS (SELECT 1 FROM public.tenants WHERE slug = final_slug) LOOP
+    final_slug := lower(trim(tenant_slug)) || '-' || counter;
+    counter := counter + 1;
+  END LOOP;
+
+  INSERT INTO public.tenants (name, slug, phone, address, subscription_end_date)
+  VALUES (tenant_name, final_slug, owner_phone, NULL, now() + interval '365 days')
   RETURNING id INTO new_tenant_id;
 
   INSERT INTO public.tenant_settings (tenant_id, billing_model)
-  VALUES (new_tenant_id, 'prepaid');
+  VALUES (new_tenant_id, 'prepaid')
+  ON CONFLICT (tenant_id) DO NOTHING;
 
-  INSERT INTO public.users (id, tenant_id, full_name, phone, role, is_active)
-  VALUES (current_user_id, new_tenant_id, owner_full_name, owner_phone, 'owner', true)
+  INSERT INTO public.users (id, tenant_id, full_name, phone, role, is_active, is_superadmin)
+  VALUES (
+    current_user_id,
+    new_tenant_id,
+    owner_full_name,
+    owner_phone,
+    'owner',
+    true,
+    (auth.jwt() ->> 'email' = 'mazenhelal29@gmail.com')
+  )
   ON CONFLICT (id) DO UPDATE
   SET tenant_id = EXCLUDED.tenant_id,
       full_name = EXCLUDED.full_name,
@@ -439,6 +459,8 @@ BEGIN
   RETURN new_tenant_id;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.create_tenant_with_owner(text, text, text, text) TO authenticated, anon, service_role;
 
 -- 11. Create Default Base Center (المركز الرئيسي النظيف لاستقبال البيانات الحقيقية)
 INSERT INTO public.tenants (id, name, slug, phone, address, subscription_end_date)
@@ -483,10 +505,12 @@ GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
 GRANT ALL ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO postgres, anon, authenticated, service_role;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO postgres, anon, authenticated, service_role;
 
 -- 13. Notify PostgREST to reload schema cache immediately
 NOTIFY pgrst, 'reload schema';
